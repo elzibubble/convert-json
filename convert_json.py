@@ -10,25 +10,31 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
+#
+# Borrowed from oslo.log, with the Oslo dependencies stripped and maybe some
+# patches of mine added.
 
 from __future__ import print_function
 
 import argparse
 import collections
 import functools
+import json
+import logging
 import sys
 import time
 
-from oslo_serialization import jsonutils
-from oslo_utils import importutils
 import six
 
-from oslo_log import log
-
-termcolor = importutils.try_import('termcolor')
+try:
+    import termcolor
+except ImportError:
+    pass
 
 
 _USE_COLOR = False
+DEFAULT_LEVEL_KEY = 'levelname'
+DEFAULT_TRACEBACK_KEY = 'traceback'
 
 
 def main():
@@ -41,6 +47,8 @@ def main():
         args.locator,
         loggers=args.loggers,
         levels=args.levels,
+        level_key=args.levelkey,
+        traceback_key=args.tbkey,
         )
     if args.lines:
         # Read backward until we find all of our newline characters
@@ -74,6 +82,13 @@ def parse_args():
     parser.add_argument("--locator",
                         default='[%(funcname)s %(pathname)s:%(lineno)s]',
                         help="Locator to append to DEBUG records")
+    parser.add_argument("--levelkey",
+                        default=DEFAULT_LEVEL_KEY,
+                        help="Key in the JSON record where the level is held")
+    parser.add_argument("--tbkey",
+                        default=DEFAULT_TRACEBACK_KEY,
+                        help="Key in the JSON record where the"
+                             " traceback/exception is held")
     parser.add_argument("-c", "--color",
                         action='store_true', default=False,
                         help="Color log levels (requires `termcolor`)")
@@ -119,7 +134,7 @@ def colorise(key, text=None):
 
 
 def warn(prefix, msg):
-    return "%s: %s" % (colorise('exc', prefix), msg)
+    return "%s: %s" % (colorise('INFO', prefix), msg)
 
 
 def reformat_json(fh, formatter, follow=False):
@@ -132,19 +147,21 @@ def reformat_json(fh, formatter, follow=False):
                 continue
             else:
                 break
-        line = line.strip()
+        line = line.rstrip()
         if not line:
             continue
         try:
-            record = jsonutils.loads(line)
-        except ValueError:
+            record = json.loads(line)
+        except Exception:
             yield warn("Not JSON", line)
             continue
         for out_line in formatter(record):
             yield out_line
 
 
-def console_format(prefix, locator, record, loggers=[], levels=[]):
+def console_format(prefix, locator, record, loggers=[], levels=[],
+                   level_key=DEFAULT_LEVEL_KEY,
+                   traceback_key=DEFAULT_TRACEBACK_KEY):
     # Provide an empty string to format-specifiers the record is
     # missing, instead of failing. Doesn't work for non-string
     # specifiers.
@@ -155,11 +172,11 @@ def console_format(prefix, locator, record, loggers=[], levels=[]):
         if not any(name.startswith(n) for n in loggers):
             return
     if levels:
-        if record.get('levelname') not in levels:
+        if record.get(level_key) not in levels:
             return
-    levelname = record.get('levelname')
+    levelname = record.get(level_key)
     if levelname:
-        record['levelname'] = colorise(levelname)
+        record[level_key] = colorise(levelname)
 
     try:
         prefix = prefix % record
@@ -172,13 +189,15 @@ def console_format(prefix, locator, record, loggers=[], levels=[]):
         return
 
     locator = ''
-    if (record.get('levelno', 100) <= log.DEBUG or levelname == 'DEBUG'):
+    if (record.get('levelno', 100) <= logging.DEBUG or levelname == 'DEBUG'):
         locator = locator % record
 
     yield ' '.join(x for x in [prefix, record['message'], locator] if x)
 
-    tb = record.get('traceback')
+    tb = record.get(traceback_key)
     if tb:
+        if type(tb) is str:
+            tb = tb.rstrip().split("\n")
         for tb_line in tb:
             yield ' '.join([prefix, tb_line])
 
